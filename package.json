@@ -1,0 +1,43 @@
+{
+  "name": "asyncstandup",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start:web": "node dist/server.js",
+    "start:scheduler": "node dist/scheduler.js",
+    "start:worker": "node dist/workers/sendDM.js",
+    "dev:web": "ts-node-dev --respawn --transpile-only --ignore-watch node_modules src/server.ts",
+    "dev:scheduler": "ts-node-dev --respawn --transpile-only --ignore-watch node_modules src/scheduler.ts",
+    "dev:worker": "ts-node-dev --respawn --transpile-only --ignore-watch node_modules src/workers/sendDM.ts",
+    "dev": "pnpm build && concurrently \"pnpm:dev:*\"",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "cy:open": "cypress open",
+    "cy:run": "cypress run",
+    "db:migrate:dev": "psql postgresql://devuser:devpassword@localhost:5433/asyncstandup_dev < 0001_init.sql"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/ioredis": "^5.0.0",
+    "@types/node": "^22.15.3",
+    "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.11.14",
+    "concurrently": "^9.1.2",
+    "cypress": "^14.3.2",
+    "ioredis": "^5.6.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.2.1",
+    "@slack/web-api": "^7.9.1",
+    "bullmq": "^5.51.1",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^16.5.0",
+    "pg": "^8.15.6"
+  }
+}

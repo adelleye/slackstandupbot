@@ -1,0 +1,64 @@
+# fly.toml app configuration file generated for asyncstandup-app
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# Replace "asyncstandup-app" with your actual app name!
+app = "asyncstandup-app"
+primary_region = "iad" # Choose the region closest to you or your users
+
+# Define environment variables available at build time (not typical for Dockerfile builds)
+# [build.args]
+#   NODE_VERSION = "20"
+
+# Define environment variables available at runtime
+[env]
+  PORT = "3000"
+  NODE_ENV = "production"
+  # Set Redis details if not using default localhost (depends on Redis setup)
+  # REDIS_HOST = "your-redis-host.internal"
+  # REDIS_PORT = "6379"
+
+# Define secrets that need to be set via `fly secrets set`
+# fly secrets set SLACK_BOT_TOKEN="xoxb-..." SLACK_SIGNING_SECRET="..." DATABASE_URL="..."
+# [secrets]
+#   SLACK_BOT_TOKEN
+#   SLACK_SIGNING_SECRET
+#   DATABASE_URL
+#   # REDIS_PASSWORD (if needed)
+
+# Define persistent volume mount
+[mounts]
+  source="app_data"
+  destination="/data"
+
+# Define processes to run
+# The 'web' process handles HTTP requests
+# 'scheduler' and 'worker' run background tasks
+[processes]
+  web = "node dist/server.js"
+  scheduler = "node dist/scheduler.js"
+  worker = "node dist/workers/sendDM.js"
+
+# Define the primary web service
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true # Stop machines when idle to save costs
+  auto_start_machines = true # Start machines when requests come in
+  min_machines_running = 0 # Can be set to 1 for continuous availability
+  processes = ["web"] # This service runs the 'web' process
+
+# Define VM resources for each process group
+# Use [[vm]] sections for each process group if different sizes are needed
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256 # Start small, adjust based on usage
+  # Assign specific processes to this VM size if needed, otherwise applies to all
+  # processes = ["web", "scheduler", "worker"]
+
+# Optional: Define deployment strategy
+# [deploy]
+#   release_command = "pnpm db:migrate" # Example: run migrations before releasing
+#   strategy = "rolling"
+
+``` 

@@ -1,0 +1,123 @@
+Below is a **battle-tested blueprint for rolling your own “Geekbot-lite” inside Slack** — simple enough for a junior engineer to MVP in a weekend, yet scalable if you want to layer on analytics later.
+
+---
+
+## 1. Scope an MVP in one sentence  
+> **Goal:** DM each teammate a short stand-up questionnaire at their local morning time and post an aggregated summary to a chosen channel.
+
+Keep everything else (polls, sentiment analysis, fancy dashboards) for version 2.
+
+---
+
+## 2. Architecture at a glance  
+
+```
+Slack App (Bot Token)  ←→  Your API (Bolt for JS / Python)
+                                 ↑
+               Scheduler / Job Queue (cron, BullMQ, Cloud Tasks)
+                                 ↑
+                Postgres (Supabase / RDS)  ──↗ (stores users, TZ, Q&A)
+```
+
+* All interaction with Slack flows through the Bolt SDK (webhook-first, so any host that can receive HTTPS works).  
+* **Scheduler** fires the “send DM” jobs at the right UTC second.  
+* **Postgres** holds user preferences, stand-up questions, answers, and run logs.
+
+---
+
+## 3. Step-by-step build guide  
+
+| # | Action | Tips |
+|---|---|---|
+| 1 | **Create a Slack App** (https://api.slack.com/apps) | Add **Bot Token Scopes**: `chat:write`, `chat:write.public`, `im:history`, `users:read`, `commands`, `channels:read`. |
+| 2 | **Events & Interactivity** | Enable *Event Subscriptions* for `app_mention`, `message.im`. Add a *Slash Command* `/standup`. Provide your public HTTPS endpoint (e.g., `https://bot.example.com/slack/events`). |
+| 3 | **Spin up a Bolt project** | `npm i @slack/bolt` (Node) **or** `pip install slack_bolt` (Python). Export `SLACK_BOT_TOKEN` & `SLACK_SIGNING_SECRET`. |
+| 4 | **Onboard flow** | When `/standup setup` is typed, open a **modal** asking:<br>• “What channel should summaries go to?”<br>• “What time (24-h) should I ping you?”<br>Save user-id, channel-id, and preferred time-zone. |
+| 5 | **Schedule jobs** | Every minute, a cron checks for jobs whose `next_run_at <= now()`. Push a job to BullMQ (Node) or RQ (Python). Calculate `next_run_at` by converting the user’s selected local time to UTC. |
+| 6 | **Send DM & collect answers** | Use `chat.postMessage` to DM questions as *blocks* with “Reply in thread” prompt **or** interactive *input blocks* inside a modal. |
+| 7 | **Detect completion** | Track replies via `message.im` events or modal submission payload. Store answers. |
+| 8 | **Aggregate & post summary** | After everyone in the workspace who’s enabled stand-up has answered (or after a cut-off time), build markdown like:<br>`*Daily Stand-up – 29 Apr 2025*`\n• @User1 – did X / today Y / blockers Z\n• … and send to the summary channel via `chat.postMessage`. |
+| 9 | **Deploy** | Cheapest path: Fly.io, Render, or a single $5 VPS with an external Postgres (Supabase free tier). Point Slack to `https://<your-app>.fly.dev/slack/events`. |
+|10 | **Secure & test** | Verify Slack signatures (`x-slack-signature`), rotate tokens via Slack UI, and add a basic health-check endpoint so Slack can retry failed deliveries. |
+
+---
+
+## 4. 50-line working skeleton (Node + Bolt)
+
+```javascript
+import { App } from '@slack/bolt';
+import cron from 'node-cron';
+import pg from 'pg';
+
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+});
+
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+// Slash command: /standup setup
+app.command('/standup', async ({ ack, body, client }) => {
+  await ack();
+  // Open modal for time + channel selection (omitted for brevity)
+});
+
+// Cron: fire every minute to send DMs that are due
+cron.schedule('* * * * *', async () => {
+  const { rows } = await db.query(
+    'SELECT * FROM schedules WHERE next_run_at <= now()'
+  );
+  for (const sched of rows) {
+    await app.client.chat.postMessage({
+      channel: sched.user_id,
+      text: '👋 Stand-up time! What did you work on yesterday?',
+    });
+    // update next_run_at to tomorrow
+    await db.query(
+      'UPDATE schedules SET next_run_at = next_run_at + interval \'1 day\' WHERE id=$1',
+      [sched.id]
+    );
+  }
+});
+
+// Listen for DM replies
+app.message(async ({ message, client }) => {
+  if (message.channel_type !== 'im') return;
+  // Save answer, then (optionally) check if summary ready
+});
+
+(async () => {
+  await app.start(process.env.PORT || 3000);
+  console.log('⚡️ Bot is running');
+})();
+```
+
+*(Add proper error handling, modal code, and summary logic.)*
+
+---
+
+## 5. Going beyond the MVP
+
+| Feature | How to add |
+|---|---|
+| **Custom questions / templates** | Store a `questions` table keyed by template. Expose `/standup template daily|retro|sales`. |
+| **Sentiment & blockers heat-map** | Pipe answers to OpenAI API (`/v1/chat/completions`) → classify sentiment & blocker category → aggregate in dashboard (Superset or Retool). |
+| **“Answered only” billing model** | Billable events = count of distinct user-id + date rows in `answers` table. |
+| **Mobile push** | Slack handles this natively once the DM is sent. |
+
+---
+
+## 6. Resources  
+* Slack **Bolt** docs – https://slack.dev/bolt-js/  
+* Slack **Modals** & Block Kit Builder – test layouts live.  
+* **Supabase** free Postgres + auth if you need an Admin UI fast.  
+* **BullMQ** (Redis) if you outgrow cron and need durable job queues.
+
+---
+
+### TL;DR  
+1. Ship a Bolt-based webhook server.  
+2. Store per-user schedule & time-zone.  
+3. Cron every minute → DM questions → log answers → post summary.  
+
+That’s genuinely all “Geekbot core” is under the hood; the magic is in copy, UX polish, and reliable scheduling. Once the MVP is solid, layering on AI insights and fancier reports is straightforward. Happy hacking!
