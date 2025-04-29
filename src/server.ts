@@ -1,4 +1,9 @@
-import { LogLevel, ViewSubmitAction, BlockAction } from "@slack/bolt";
+import {
+  LogLevel,
+  ViewSubmitAction,
+  BlockAction,
+  ViewResponseAction,
+} from "@slack/bolt";
 import { QueryResult } from "pg";
 import {
   format,
@@ -14,10 +19,11 @@ import {
   addDays,
   parse,
 } from "date-fns";
+import { Request, Response } from "express"; // Import Request and Response types
 
 // Import shared instances
 import { dbPool } from "./lib/db";
-import { boltApp as app } from "./lib/slack"; // Rename imported app
+import { boltApp as app, receiver } from "./lib/slack"; // Rename imported app and import receiver
 
 // --- Type Imports for Handlers ---
 import {
@@ -86,6 +92,7 @@ function calculateNextRunAtUTC(
 
 // --- Modal Callback ID ---
 const SETUP_MODAL_CALLBACK_ID = "standup_setup_modal";
+const STANDUP_MODAL_CALLBACK_ID = "standup_modal_submit"; // New Callback ID for stand-up submission
 
 // --- Slash Command Handler ---
 app.command("/standup", async ({ command, ack, body, client, logger }) => {
@@ -344,71 +351,172 @@ app.command("/healthcheck", async ({ ack }) => {
   await ack("pong");
 });
 
-// Handle the stand-up submission from the button click
+// NEW: Simple HTTP health check route using the exported receiver's router
+receiver.router.get("/healthz", (_: Request, res: Response) => {
+  res.status(200).send("ok");
+});
+
+// NEW: Handle the button click to open the stand-up modal
 app.action<BlockAction>(
-  "submit_standup_action",
+  "open_standup_modal",
   async ({ ack, body, client, logger }) => {
-    await ack();
+    await ack(); // Acknowledge the button click quickly
 
-    const blockActionBody = body as BlockAction;
-    const slackUserId = blockActionBody.user.id;
-    const values = blockActionBody.state?.values;
+    const triggerId = body.trigger_id;
+    const userId = body.user.id;
 
-    if (!values) {
-      logger.error("Missing state values in standup submission", {
-        userId: slackUserId,
-        body: blockActionBody, // Log the body for debugging
+    logger.info(`User ${userId} clicked button to open stand-up modal`);
+
+    try {
+      await client.views.open({
+        trigger_id: triggerId,
+        view: {
+          type: "modal",
+          callback_id: STANDUP_MODAL_CALLBACK_ID, // Use the new callback ID
+          title: { type: "plain_text", text: "Daily Stand-up" },
+          submit: { type: "plain_text", text: "Submit" },
+          close: { type: "plain_text", text: "Cancel" },
+          blocks: [
+            {
+              type: "input",
+              block_id: "yesterday_block",
+              label: {
+                type: "plain_text",
+                text: "Yesterday's accomplishments",
+              },
+              element: {
+                type: "plain_text_input",
+                action_id: "yesterday_input",
+                multiline: true,
+              },
+            },
+            {
+              type: "input",
+              block_id: "today_block",
+              label: { type: "plain_text", text: "Today's priorities" },
+              element: {
+                type: "plain_text_input",
+                action_id: "today_input",
+                multiline: true,
+              },
+            },
+            {
+              type: "input",
+              block_id: "blockers_block",
+              label: { type: "plain_text", text: "Blockers" },
+              element: {
+                type: "plain_text_input",
+                action_id: "blockers_input",
+                multiline: true,
+              },
+              optional: true,
+            },
+          ],
+        },
       });
-      // **Improvement:** Send ephemeral message to user
+      logger.info(`Successfully opened stand-up modal for user ${userId}`);
+    } catch (error) {
+      logger.error(`Error opening stand-up modal for user ${userId}:`, error);
+      // Optionally notify the user if the modal fails to open
       try {
         await client.chat.postEphemeral({
-          channel: blockActionBody.channel?.id || slackUserId, // Need a channel context, use original channel or DM user
-          user: slackUserId,
-          text: "😥 Sorry, I couldn't find the data from your submission. This might be a temporary Slack issue. Please try submitting again.",
+          channel: body.channel?.id || userId,
+          user: userId,
+          text: `😥 Sorry, I couldn't open the stand-up form. Error: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         });
-      } catch (ephemeralError) {
+      } catch (ephemError) {
         logger.error(
-          `Failed to send missing state ephemeral message to user ${slackUserId}:`,
-          ephemeralError
+          `Failed to send ephemeral error for modal open failure to user ${userId}:`,
+          ephemError
         );
       }
-      return; // Exit the handler
+    }
+  }
+);
+
+// NEW: Handle the stand-up submission from the modal
+app.view<ViewSubmitAction>(
+  STANDUP_MODAL_CALLBACK_ID,
+  async ({ ack, body, view, client, logger }) => {
+    const slackUserId = body.user.id;
+    const values = view.state.values;
+    const slackTeamId = body.team?.id; // Needed for workspace lookup
+
+    const yesterdayAnswer =
+      values.yesterday_block?.yesterday_input?.value || "";
+    const todayAnswer = values.today_block?.today_input?.value || "";
+    const blockersAnswer = values.blockers_block?.blockers_input?.value || "";
+
+    logger.info(
+      `Received stand-up submission via modal from user ${slackUserId}`
+    );
+
+    // Basic validation (can be expanded)
+    if (!yesterdayAnswer || !todayAnswer) {
+      const errors: Record<string, string> = {};
+      if (!yesterdayAnswer) {
+        errors.yesterday_block = "Please fill out what you did yesterday.";
+      }
+      if (!todayAnswer) {
+        errors.today_block = "Please fill out what you plan to do today.";
+      }
+
+      await ack({
+        response_action: "errors",
+        errors: errors, // Pass the explicitly constructed errors object
+      });
+      logger.warn(
+        `Stand-up modal validation failed for user ${slackUserId} (missing required fields)`
+      );
+      return;
     }
 
-    // Extract answers from the state values object
-    // The keys correspond to the block_id and action_id defined in sendDM.ts
-    const yesterdayAnswer = values.yesterday?.yesterday_input?.value || "";
-    const todayAnswer = values.today?.today_input?.value || "";
-    const blockersAnswer = values.blockers?.blockers_input?.value || ""; // Optional block
-
-    logger.info(`Received stand-up submission from user ${slackUserId}`);
+    // Acknowledge the view submission immediately if validation passes
+    await ack();
 
     let userId: number | null = null;
     let workspaceId: number | null = null;
 
     const dbClient = await dbPool.connect();
     try {
+      // Find user and workspace IDs
       const userRes = await dbClient.query(
-        "SELECT id, workspace_id FROM users WHERE slack_user_id = $1",
+        "SELECT id, workspace_id, tz, (SELECT s.next_run_at FROM schedules s WHERE s.user_id = users.id AND s.workspace_id = users.workspace_id AND s.is_active = TRUE LIMIT 1) as next_run_at FROM users WHERE slack_user_id = $1",
         [slackUserId]
       );
+
       if (userRes.rows.length === 0) {
         throw new Error(
-          `User ${slackUserId} not found during answer submission.`
+          `User ${slackUserId} not found during modal answer submission.`
         );
       }
+
       userId = userRes.rows[0].id;
       workspaceId = userRes.rows[0].workspace_id;
+      const userTimezone = userRes.rows[0].tz;
+      const currentNextRunAt: Date | null = userRes.rows[0].next_run_at;
+
+      if (!workspaceId || !userTimezone || !userId) {
+        throw new Error(
+          `Missing workspace ID, timezone, or user ID for Slack user ${slackUserId}`
+        );
+      }
 
       logger.debug(
-        `Found DB user ID ${userId} and workspace ID ${workspaceId} for Slack user ${slackUserId}`
+        `Found DB user ID ${userId}, workspace ID ${workspaceId}, TZ ${userTimezone} for Slack user ${slackUserId}`
       );
 
+      // Start transaction
+      await dbClient.query("BEGIN");
+
+      // Insert the answers
       const insertQuery = `
-      INSERT INTO answers (user_id, workspace_id, yesterday, today, blockers)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id;
-    `;
+        INSERT INTO answers (user_id, workspace_id, yesterday, today, blockers)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id;
+      `;
       const result = await dbClient.query(insertQuery, [
         userId,
         workspaceId,
@@ -416,60 +524,64 @@ app.action<BlockAction>(
         todayAnswer,
         blockersAnswer,
       ]);
-
       logger.info(
-        `Saved stand-up answer (DB ID: ${result.rows[0].id}) for user ${userId} in workspace ${workspaceId}`
+        `Saved stand-up answer (DB ID: ${result.rows[0].id}) for user ${userId} via modal`
       );
 
-      // **Improvement:** Wrap chat.update in try...catch
-      try {
-        await client.chat.update({
-          channel: blockActionBody.channel?.id || "",
-          ts: blockActionBody.message?.ts || "",
-          text: "✅ Stand-up submitted successfully!",
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: "✅ *Stand-up Submitted!* Thanks for sharing.",
-              },
-            },
-          ],
-        });
-        logger.info(`Updated original message for user ${slackUserId}`);
-      } catch (updateError) {
-        logger.error(
-          `Failed to update original stand-up message for user ${slackUserId}:`,
-          updateError
+      // Calculate the *next* next run time based on the *current* one
+      let newNextRunAt: Date | null = null;
+      if (currentNextRunAt) {
+        const nextDay = addDays(currentNextRunAt, 1); // Simply add 1 day to the last scheduled time
+        newNextRunAt = nextDay;
+        logger.info(
+          `Calculated next run time for user ${userId} as ${newNextRunAt.toISOString()} UTC (based on previous ${currentNextRunAt.toISOString()})`
         );
-        // Send ephemeral message indicating save was successful but update failed
-        try {
-          await client.chat.postEphemeral({
-            channel: blockActionBody.channel?.id || slackUserId, // Use original channel or DM
-            user: slackUserId,
-            text: "✅ Your stand-up was saved successfully, but I couldn't update the original message.",
-          });
-        } catch (ephemError) {
-          logger.error(
-            `Failed to send chat.update failure ephemeral to user ${slackUserId}:`,
-            ephemError
-          );
-        }
+
+        // Update the schedule
+        await dbClient.query(
+          "UPDATE schedules SET next_run_at = $1, updated_at = NOW() WHERE user_id = $2 AND workspace_id = $3 AND is_active = TRUE",
+          [newNextRunAt, userId, workspaceId]
+        );
+        logger.info(
+          `Updated schedule for user ${userId} to next run at ${newNextRunAt.toISOString()}`
+        );
+      } else {
+        // This case should ideally not happen if the user received a DM, but handle defensively
+        logger.warn(
+          `Could not find current next_run_at for user ${userId} to update schedule.`
+        );
+        // Optional: Could try recalculating based on their settings if needed, but might indicate another issue.
       }
+
+      // Commit transaction
+      await dbClient.query("COMMIT");
+
+      // Send confirmation message
+      await client.chat.postEphemeral({
+        channel: slackUserId, // Send confirmation to the user directly
+        user: slackUserId,
+        text: "✅ Your stand-up has been submitted successfully! Thanks!",
+      });
+      logger.info(`Sent modal submission confirmation to user ${slackUserId}`);
     } catch (error) {
-      logger.error(`Error saving stand-up for user ${slackUserId}:`, error);
-      // Optionally, inform the user about the error
+      await dbClient.query("ROLLBACK");
+      logger.error(
+        `Error saving stand-up from modal for user ${slackUserId}:`,
+        error
+      );
+      // Inform the user about the error via ephemeral message
       try {
         await client.chat.postEphemeral({
-          channel: blockActionBody.channel?.id || "",
+          channel: slackUserId,
           user: slackUserId,
-          text: "😥 Apologies, there was an error saving your stand-up. Please try again or contact support.",
+          text: `😥 Apologies, there was an error saving your stand-up: ${
+            error instanceof Error ? error.message : String(error)
+          }. Please try again or contact support.`,
         });
-      } catch (ephemeralError) {
+      } catch (ephemError) {
         logger.error(
-          `Failed to send ephemeral error message to user ${slackUserId}:`,
-          ephemeralError
+          `Failed to send ephemeral error message for modal submission to user ${slackUserId}:`,
+          ephemError
         );
       }
     } finally {

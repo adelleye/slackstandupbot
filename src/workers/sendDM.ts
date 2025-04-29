@@ -1,4 +1,5 @@
 import { Worker, Job } from "bullmq";
+import IORedis from "ioredis"; // Import IORedis
 // import { WebClient } from "@slack/web-api"; // Removed import
 // import dotenv from "dotenv"; // Removed import
 
@@ -18,58 +19,18 @@ const standupQuestionsBlocks = [
     type: "divider",
   },
   {
-    type: "input",
-    block_id: "yesterday",
-    label: {
-      type: "plain_text",
-      text: "What did you accomplish yesterday?",
-    },
-    element: {
-      type: "plain_text_input",
-      action_id: "yesterday_input",
-      multiline: true,
-    },
-  },
-  {
-    type: "input",
-    block_id: "today",
-    label: {
-      type: "plain_text",
-      text: "What are your top priorities for today?",
-    },
-    element: {
-      type: "plain_text_input",
-      action_id: "today_input",
-      multiline: true,
-    },
-  },
-  {
-    type: "input",
-    block_id: "blockers",
-    label: {
-      type: "plain_text",
-      text: "Any blockers impeding your progress?",
-    },
-    element: {
-      type: "plain_text_input",
-      action_id: "blockers_input",
-      multiline: true,
-    },
-    optional: true, // Making blockers optional
-  },
-  {
     type: "actions",
-    block_id: "submit_standup",
+    block_id: "open_standup_modal_block",
     elements: [
       {
         type: "button",
         text: {
           type: "plain_text",
-          text: "Submit Stand-up",
+          text: "📝 Fill out your stand-up",
           emoji: true,
         },
         style: "primary",
-        action_id: "submit_standup_action", // We'll need to handle this action in the main app
+        action_id: "open_standup_modal",
       },
     ],
   },
@@ -105,15 +66,20 @@ const processSendDmJob = async (job: Job<{ userId: string }>) => {
   }
 };
 
-// Initialize BullMQ Worker
-// Default connection is Redis at 127.0.0.1:6379
+// Create an IORedis connection instance using REDIS_URL or defaults
+const redisConnection = process.env.REDIS_URL
+  ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
+  : new IORedis({
+      host: process.env.REDIS_HOST || "127.0.0.1",
+      port: parseInt(process.env.REDIS_PORT || "6379", 10),
+      maxRetriesPerRequest: null,
+    });
+
+// Initialize BullMQ Worker using the IORedis instance
 const worker = new Worker("send_dm", processSendDmJob, {
-  connection: {
-    host: process.env.REDIS_HOST || "127.0.0.1",
-    port: parseInt(process.env.REDIS_PORT || "6379", 10),
-    // password: process.env.REDIS_PASSWORD // Add if needed
-  },
-  // Optional: Add concurrency, rate limiting, etc.
+  connection: redisConnection.duplicate(), // Use duplicated ioredis instance
+  limiter: { max: 45, duration: 60000 }, // Add rate limiting (45 jobs per minute)
+  // Optional: Add concurrency
   // concurrency: 5,
 });
 
@@ -138,9 +104,10 @@ console.log("SendDM worker started, waiting for jobs...");
 
 // Graceful shutdown
 const gracefulShutdown = async () => {
-  console.log("Closing SendDM worker...");
+  console.log("Closing SendDM worker and Redis connection...");
   await worker.close();
-  console.log("SendDM worker closed.");
+  await redisConnection.quit(); // Quit the IORedis connection
+  console.log("SendDM worker and Redis connection closed.");
   process.exit(0);
 };
 

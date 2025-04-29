@@ -103,3 +103,18 @@ This project uses Cypress for end-to-end (E2E) testing, particularly for flows i
     1.  Ensure the app server (`pnpm dev` or at least `pnpm dev:web`) and Redis (`docker-compose up -d redis`) are running.
     2.  Make sure you have implemented the `/api/mock/slack/events` endpoint in `src/server.ts` as described in the test file comments.
     3.  Run `pnpm cy:run` (headless) or `pnpm cy:open` (interactive runner).
+
+## Deploy
+
+Deployment is handled via Fly.io using the provided `Dockerfile` and `fly.toml`.
+
+1.  **Install Fly CLI:** Follow instructions at <https://fly.io/docs/hands-on/install-flyctl/>
+2.  **Login:** `fly auth login`
+3.  **Launch App (First Time):** `fly launch --copy-config --no-deploy` (Review and confirm settings in `fly.toml`. Ensure the app name is unique.)
+4.  **Set Secrets:** Replace placeholders with your actual credentials:
+    ```bash
+    fly secrets set SLACK_BOT_TOKEN="xoxb-..." SLACK_SIGNING_SECRET="..." DATABASE_URL="postgres://..." REDIS_URL="redis://..."
+    ```
+5.  **Deploy:** `fly deploy`
+
+This will build the Docker image, push it to Fly.io, run the `release_command` (database migrations), and start the `web`, `scheduler`, and `worker` processes defined in `fly.toml`.

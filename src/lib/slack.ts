@@ -1,13 +1,18 @@
-import { App, LogLevel } from "@slack/bolt";
+import { App, LogLevel, ExpressReceiver } from "@slack/bolt";
 import { WebClient } from "@slack/web-api";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Initialize Bolt App
+// Create an Express Receiver
+export const receiver = new ExpressReceiver({
+  signingSecret: process.env.SLACK_SIGNING_SECRET || "",
+});
+
+// Initialize Bolt App with the receiver
 export const boltApp = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  receiver: receiver,
   logLevel:
     process.env.NODE_ENV === "production" ? LogLevel.INFO : LogLevel.DEBUG,
   // Note: app.start() needs to be called elsewhere (typically server.ts)

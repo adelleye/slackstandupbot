@@ -1,8 +1,13 @@
 import cron from "node-cron";
 import { Queue } from "bullmq";
+import { startOfToday } from "date-fns"; // Import date-fns utility
+import IORedis from "ioredis"; // Import IORedis
 
 // Import shared DB pool
 import { dbPool } from "./lib/db";
+
+// Import summary function
+import { maybePostSummary } from "./summary";
 
 interface Schedule {
   id: number;
@@ -61,25 +66,99 @@ async function processSchedules() {
   }
 }
 
-// Initialize BullMQ Queue (keep this local to scheduler)
-const dmQueue = new Queue("send_dm");
+// Create an IORedis connection instance using REDIS_URL or defaults
+const redisConnection = process.env.REDIS_URL
+  ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null }) // Use URL
+  : new IORedis({
+      // Use host/port
+      host: process.env.REDIS_HOST || "127.0.0.1",
+      port: parseInt(process.env.REDIS_PORT || "6379", 10),
+      maxRetriesPerRequest: null, // Recommended for BullMQ
+    });
 
-// Schedule the job to run every minute
+// Initialize BullMQ Queue using the IORedis instance
+const dmQueue = new Queue("send_dm", {
+  connection: redisConnection.duplicate(), // Pass the duplicated ioredis instance
+});
+
+// Schedule the job to check for due DMs every minute
 cron.schedule("* * * * *", processSchedules);
 
-console.log("Scheduler started, checking every minute.");
+// NEW: Schedule the summary job to run daily at 17:05 UTC
+cron.schedule(
+  "5 17 * * *",
+  async () => {
+    console.log("Scheduler running daily summary check (17:05 UTC)...");
+    const todayUTC = startOfToday(); // Get the start of today in UTC
+    const client = await dbPool.connect();
+    try {
+      // Get all active workspaces
+      const { rows }: { rows: { workspace_id: number }[] } = await client.query(
+        "SELECT DISTINCT workspace_id FROM schedules WHERE is_active = TRUE"
+      );
 
-// Graceful shutdown for Queue (DB Pool shutdown can be handled centrally)
+      if (rows.length === 0) {
+        console.log("No active workspaces found for summary.");
+        return;
+      }
+
+      const workspaceIds = rows.map((row) => row.workspace_id);
+      console.log(
+        `Found ${workspaceIds.length} active workspaces for summary.`
+      );
+
+      // Attempt to post summary for each workspace concurrently
+      const summaryPromises = workspaceIds.map((workspaceId) =>
+        maybePostSummary(String(workspaceId), todayUTC)
+      );
+
+      const results = await Promise.allSettled(summaryPromises);
+
+      // Log results (optional: more detailed logging)
+      results.forEach((result, index) => {
+        const workspaceId = workspaceIds[index];
+        if (result.status === "fulfilled") {
+          console.log(
+            `Summary check/post completed for workspace ${workspaceId}: ${result.value}`
+          );
+        } else {
+          console.error(
+            `Summary check/post failed for workspace ${workspaceId}:`,
+            result.reason
+          );
+        }
+      });
+
+      console.log("Finished daily summary check.");
+    } catch (error) {
+      console.error("Error during daily summary scheduling:", error);
+    } finally {
+      client.release();
+    }
+  },
+  {
+    scheduled: true,
+    timezone: "Etc/UTC", // Explicitly set timezone to UTC
+  }
+);
+
+console.log(
+  "Scheduler started. Checks DMs every minute, posts summaries daily at 17:05 UTC."
+);
+
+// Graceful shutdown for Queue (and Redis connection)
 process.on("SIGTERM", async () => {
-  console.log("SIGTERM signal received: closing queue");
+  console.log("SIGTERM signal received: closing queue and Redis connection");
   await dmQueue.close();
-  console.log("Scheduler queue closed.");
+  await redisConnection.quit(); // Quit the IORedis connection
+  console.log("Scheduler queue and Redis connection closed.");
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
-  console.log("SIGINT signal received: closing queue");
+  console.log("SIGINT signal received: closing queue and Redis connection");
   await dmQueue.close();
-  console.log("Scheduler queue closed.");
+  await redisConnection.quit(); // Quit the IORedis connection
+  console.log("Scheduler queue and Redis connection closed.");
   process.exit(0);
 });

@@ -13,22 +13,16 @@ primary_region = "iad" # Choose the region closest to you or your users
 [env]
   PORT = "3000"
   NODE_ENV = "production"
-  # Set Redis details if not using default localhost (depends on Redis setup)
-  # REDIS_HOST = "your-redis-host.internal"
-  # REDIS_PORT = "6379"
+  # REDIS_URL will be set via secrets, no default needed here
+  # DATABASE_URL will be set via secrets, no default needed here
 
 # Define secrets that need to be set via `fly secrets set`
-# fly secrets set SLACK_BOT_TOKEN="xoxb-..." SLACK_SIGNING_SECRET="..." DATABASE_URL="..."
-# [secrets]
-#   SLACK_BOT_TOKEN
-#   SLACK_SIGNING_SECRET
-#   DATABASE_URL
-#   # REDIS_PASSWORD (if needed)
+# fly secrets set SLACK_BOT_TOKEN="xoxb-..." SLACK_SIGNING_SECRET="..." DATABASE_URL="postgres://..." REDIS_URL="redis://..."
 
-# Define persistent volume mount
-[mounts]
-  source="app_data"
-  destination="/data"
+# Removed unused volume mount
+# [mounts]
+#   source="app_data"
+#   destination="/data"
 
 # Define processes to run
 # The 'web' process handles HTTP requests
@@ -57,8 +51,8 @@ primary_region = "iad" # Choose the region closest to you or your users
   # processes = ["web", "scheduler", "worker"]
 
 # Optional: Define deployment strategy
-# [deploy]
-#   release_command = "pnpm db:migrate" # Example: run migrations before releasing
+[deploy]
+  release_command = "pnpm db:migrate:dev" # Run migrations before releasing new version
 #   strategy = "rolling"
 
 ``` 
