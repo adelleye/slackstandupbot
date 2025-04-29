@@ -92,31 +92,35 @@ cron.schedule(
     const todayUTC = startOfToday(); // Get the start of today in UTC
     const client = await dbPool.connect();
     try {
-      // Get all active workspaces
-      const { rows }: { rows: { workspace_id: number }[] } = await client.query(
-        "SELECT DISTINCT workspace_id FROM schedules WHERE is_active = TRUE"
-      );
+      // Get all active workspaces (fetch slack_team_id, not internal id)
+      const { rows }: { rows: { slack_team_id: string }[] } =
+        await client.query(
+          `SELECT DISTINCT w.slack_team_id
+         FROM schedules s
+         JOIN workspaces w ON w.id = s.workspace_id
+         WHERE s.is_active = TRUE`
+        );
 
       if (rows.length === 0) {
         console.log("No active workspaces found for summary.");
         return;
       }
 
-      const workspaceIds = rows.map((row) => row.workspace_id);
+      const slackTeamIds = rows.map((row) => row.slack_team_id);
       console.log(
-        `Found ${workspaceIds.length} active workspaces for summary.`
+        `Found ${slackTeamIds.length} active workspaces for summary.`
       );
 
       // Attempt to post summary for each workspace concurrently
-      const summaryPromises = workspaceIds.map((workspaceId) =>
-        maybePostSummary(String(workspaceId), todayUTC)
+      const summaryPromises = slackTeamIds.map((slackTeamId) =>
+        maybePostSummary(slackTeamId, todayUTC)
       );
 
       const results = await Promise.allSettled(summaryPromises);
 
       // Log results (optional: more detailed logging)
       results.forEach((result, index) => {
-        const workspaceId = workspaceIds[index];
+        const workspaceId = slackTeamIds[index];
         if (result.status === "fulfilled") {
           console.log(
             `Summary check/post completed for workspace ${workspaceId}: ${result.value}`

@@ -40,9 +40,9 @@ export async function maybePostSummary(
 
   try {
     // 1. Get workspace configuration (summary channel)
-    // Assumes a table 'workspaces' with columns 'workspace_id' (TEXT, PRIMARY KEY) and 'summary_channel' (TEXT)
+    // Assumes a table 'workspaces' with columns 'slack_team_id' (TEXT, UNIQUE) and 'summary_channel' (TEXT)
     const configRes = await client.query<WorkspaceConfig>(
-      "SELECT summary_channel FROM workspaces WHERE workspace_id = $1",
+      "SELECT summary_channel FROM workspaces WHERE slack_team_id = $1",
       [workspaceId]
     );
 
